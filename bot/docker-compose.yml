@@ -1,0 +1,13 @@
+# Секреты только в .env на сервере (не коммитьте токен).
+# База и APScheduler jobstore живут в ./data — том переживает перезапуск.
+services:
+  avoperenos-bot:
+    build: .
+    container_name: avoperenos-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: sqlite:///./data/avoperenos.db
+    volumes:
+      - ./data:/app/data
