@@ -230,6 +230,31 @@ async def start_replacement(
     await _prompt_step(message, state, "choosing_kind")
 
 
+@router.message(F.text == "Увольнение")
+async def start_dismissal(
+    message: Message, state: FSMContext, db_user: User
+) -> None:
+    """Сразу заявка на замену при увольнении — без переноса занятий."""
+    if not _can_create_replacement(db_user):
+        await message.answer(
+            "Увольнение / подбор замены доступны кураторам, "
+            "старшим преподавателям и администратору."
+        )
+        return
+    await state.clear()
+    await state.update_data(
+        students=[],
+        draft_student={},
+        kind=TicketType.DISMISSAL.value,
+        current_step="teacher",
+    )
+    await message.answer(
+        "Увольнение: нужен подбор замены преподавателя (без переноса).\n"
+        "Заполните данные по ученикам — этапы замены на карточке."
+    )
+    await _prompt_step(message, state, "teacher")
+
+
 # ---------------------------------------------------------------------------
 # Навигация
 # ---------------------------------------------------------------------------
@@ -485,6 +510,20 @@ async def repl_preview_create(
     callback: CallbackQuery, state: FSMContext, session: Session, db_user: User
 ) -> None:
     data = await state.get_data()
+    if not data.get("kind") or not data.get("teacher_name"):
+        await callback.answer(
+            "Форма устарела. Начните «Увольнение» / «Подбор замены» заново.",
+            show_alert=True,
+        )
+        return
+
+    await callback.answer("Создаю…")
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
     try:
         ticket = create_replacement_ticket(
             session,
@@ -496,32 +535,27 @@ async def repl_preview_create(
             students=list(data.get("students") or []),
             comment=data.get("comment") or None,
         )
-        session.commit()
-    except (ValueError, PermissionError) as exc:
-        await callback.answer(str(exc), show_alert=True)
+        session.flush()
+    except (ValueError, PermissionError, KeyError) as exc:
+        if callback.message:
+            await callback.message.answer(f"⚠️ Не удалось создать: {exc}")
+        return
+    except Exception as exc:
+        if callback.message:
+            await callback.message.answer(f"⚠️ Не удалось создать: {exc}")
         return
 
     ticket = get_ticket_by_id(session, ticket.id) or ticket
     await state.clear()
-    await callback.answer("Создано")
     if callback.message:
-        from bot.services.notify import (
-            format_new_ticket_duty_notification,
-            recipients_for_new_ticket_duty,
-            send_telegram_messages,
-        )
+        from bot.services.notify import notify_new_ticket
 
-        duty_recipients = recipients_for_new_ticket_duty(
-            session, ticket=ticket, creator=db_user
+        notify_status = await notify_new_ticket(
+            callback.bot, session, ticket=ticket, creator=db_user
         )
-        if duty_recipients:
-            await send_telegram_messages(
-                callback.bot,
-                duty_recipients,
-                format_new_ticket_duty_notification(ticket, creator=db_user),
-            )
         await callback.message.answer(
-            "✅ Заявка на подбор замены создана.\n\n"
+            "✅ Заявка на подбор замены создана.\n"
+            f"{notify_status}\n\n"
             + format_replacement_ticket_card(ticket, with_history=False),
             parse_mode="HTML",
             reply_markup=replacement_ticket_card_keyboard(ticket),

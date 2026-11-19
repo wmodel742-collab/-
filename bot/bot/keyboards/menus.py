@@ -34,7 +34,12 @@ def main_menu_keyboard(user: User) -> ReplyKeyboardMarkup:
         )
         rows.append(
             [
+                KeyboardButton(text="Увольнение"),
                 KeyboardButton(text="Подбор замены"),
+            ]
+        )
+        rows.append(
+            [
                 KeyboardButton(text="Активные заявки"),
             ]
         )
@@ -53,9 +58,14 @@ def main_menu_keyboard(user: User) -> ReplyKeyboardMarkup:
                 KeyboardButton(text="Мои заявки"),
             ]
         )
-        # Старший: подбор замены из своего меню (у админа уже есть в блоке куратора)
+        # Старший: увольнение / подбор замены из своего меню
         if user.role == UserRole.SENIOR_TEACHER:
-            rows.append([KeyboardButton(text="Подбор замены")])
+            rows.append(
+                [
+                    KeyboardButton(text="Увольнение"),
+                    KeyboardButton(text="Подбор замены"),
+                ]
+            )
         rows.append([KeyboardButton(text="Найти заявку")])
 
     if user.role == UserRole.ADMIN:

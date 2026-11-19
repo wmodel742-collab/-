@@ -187,9 +187,9 @@ async def _prompt_step(message: Message, state: FSMContext, step: str) -> None:
             initiator_keyboard(),
         ),
         "comment": (
-            "📌 Заметка о замене для куратора\n"
-            "(кого уже выбрали / что согласовали — куратор увидит и перешлёт преподавателю).\n"
-            "Или «Пропустить»:",
+            "Комментарий (или «Пропустить»):\n"
+            "<i>Заметку о выбранной замене можно добавить позже кнопкой "
+            "«Заметка о замене» на карточке.</i>",
             comment_keyboard(),
         ),
         "initial_state": (
@@ -539,7 +539,7 @@ async def preview_create(
     session: Session,
     db_user: User,
 ) -> None:
-    """Создать заявку без жёсткого FSM-фильтра (MemoryStorage + рестарт)."""
+    """Создать заявку: сначала answer(), потом БД (иначе кнопка «молчит»)."""
     if not _can_create(db_user):
         await callback.answer("Нет прав", show_alert=True)
         return
@@ -550,48 +550,41 @@ async def preview_create(
             show_alert=True,
         )
         return
-    try:
-        payload = ticket_payload_from_fsm(data)
-        ticket = create_ticket(session, creator=db_user, **payload)
-    except (ValueError, KeyError) as exc:
-        await callback.answer(str(exc)[:180], show_alert=True)
-        if callback.message:
-            await callback.message.answer(f"⚠️ Не удалось создать: {exc}")
-        return
-    except Exception as exc:
-        await callback.answer("Ошибка создания", show_alert=True)
-        if callback.message:
-            await callback.message.answer(f"⚠️ Не удалось создать: {exc}")
-        return
 
-    await state.clear()
-    await callback.answer("Создано")
+    await callback.answer("Создаю…")
     if callback.message:
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
         except Exception:
             pass
-        # Перезагружаем с relationships
-        ticket = get_ticket_by_id(session, ticket.id) or ticket
-        from bot.services.notify import (
-            format_new_ticket_duty_notification,
-            recipients_for_new_ticket_duty,
-            send_telegram_messages,
-        )
 
-        duty_recipients = recipients_for_new_ticket_duty(
-            session, ticket=ticket, creator=db_user
+    try:
+        payload = ticket_payload_from_fsm(data)
+        ticket = create_ticket(session, creator=db_user, **payload)
+        session.flush()
+    except (ValueError, KeyError) as exc:
+        if callback.message:
+            await callback.message.answer(f"⚠️ Не удалось создать: {exc}")
+        return
+    except Exception as exc:
+        if callback.message:
+            await callback.message.answer(f"⚠️ Не удалось создать: {exc}")
+        return
+
+    await state.clear()
+    if callback.message:
+        ticket = get_ticket_by_id(session, ticket.id) or ticket
+        from bot.services.notify import notify_new_ticket
+
+        notify_status = await notify_new_ticket(
+            callback.bot, session, ticket=ticket, creator=db_user
         )
-        if duty_recipients:
-            await send_telegram_messages(
-                callback.bot,
-                duty_recipients,
-                format_new_ticket_duty_notification(ticket, creator=db_user),
-            )
         await callback.message.answer(
-            "✅ Заявка создана.\n\n" + format_ticket_card(ticket, with_history=False),
+            "✅ Заявка создана.\n"
+            f"{notify_status}\n\n"
+            + format_ticket_card(ticket, with_history=False),
             parse_mode="HTML",
-            reply_markup=ticket_card_keyboard(ticket),
+            reply_markup=_card_markup_for(ticket),
         )
         await callback.message.answer(
             "Главное меню:",

@@ -77,7 +77,9 @@ def test_senior_created_ticket_notifies_duty(
     assert "Заметка о замене" in text
 
 
-def test_curator_creator_who_is_duty_skips_self(session: Session, admin_user):
+def test_curator_creator_who_is_duty_notifies_other_curator(
+    session: Session, admin_user
+):
     ksenia = create_employee(
         session,
         telegram_id=2101,
@@ -85,7 +87,7 @@ def test_curator_creator_who_is_duty_skips_self(session: Session, admin_user):
         role=UserRole.CURATOR,
         actor_telegram_id=admin_user.telegram_id,
     )
-    create_employee(
+    yulia = create_employee(
         session,
         telegram_id=2102,
         name="Юлия",
@@ -98,6 +100,7 @@ def test_curator_creator_who_is_duty_skips_self(session: Session, admin_user):
 
     duty = get_duty_curator(session)
     assert duty is not None
+    other = yulia if duty.id == ksenia.id else ksenia
 
     ticket = create_ticket(
         session,
@@ -115,8 +118,8 @@ def test_curator_creator_who_is_duty_skips_self(session: Session, admin_user):
     recipients = recipients_for_new_ticket_duty(
         session, ticket=ticket, creator=duty
     )
-    assert recipients == []
-    _ = ksenia
+    assert other.id in {r.id for r in recipients}
+    assert duty.id not in {r.id for r in recipients}
 
 
 def test_senior_can_view_and_comment_mass(
@@ -162,7 +165,7 @@ def test_senior_can_view_and_comment_mass(
 
 
 def test_staff_comment_recipients_include_assignee(
-    session: Session, curator_user: User, senior_user: User, admin_user: User
+    session: Session, curator_user, senior_user, admin_user
 ):
     ticket = create_ticket(
         session,

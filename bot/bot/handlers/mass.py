@@ -127,9 +127,9 @@ async def _prompt_step(message: Message, state: FSMContext, step: str) -> None:
             mass_initiator_keyboard(),
         ),
         "comment": (
-            "📌 Заметка о замене для куратора\n"
-            "(кого уже выбрали / что согласовали — куратор увидит и перешлёт преподавателю).\n"
-            "Или «Пропустить»:",
+            "Общий комментарий к заявке (или «Пропустить»):\n"
+            "<i>Заметку о выбранной замене можно добавить позже кнопкой "
+            "«Заметка о замене» на карточке.</i>",
             mass_comment_keyboard(),
         ),
         "student_name": (
@@ -498,8 +498,8 @@ async def mass_preview_create(
 ) -> None:
     """Создать массовую заявку.
 
-    Без жёсткого FSM-фильтра: после рестарта бота MemoryStorage теряет state,
-    а кнопка «✅ Создать» на старом превью иначе «молчит».
+    Важно: сначала callback.answer() — иначе Telegram крутит кнопку, пока идёт запись в БД
+    (Отмена/Изменить шапку отвечают сразу и поэтому «работают»).
     """
     if not _can_create_mass(db_user):
         await callback.answer("Нет прав", show_alert=True)
@@ -512,6 +512,15 @@ async def mass_preview_create(
             show_alert=True,
         )
         return
+
+    # Сразу гасим «часики» у кнопки — до тяжёлой работы с БД
+    await callback.answer("Создаю…")
+    if callback.message:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
     try:
         ticket = create_mass_ticket(
             session,
@@ -523,42 +532,27 @@ async def mass_preview_create(
             students=list(data.get("students") or []),
             comment=data.get("comment") or None,
         )
+        session.flush()
     except (ValueError, KeyError) as exc:
-        await callback.answer(str(exc)[:180], show_alert=True)
         if callback.message:
             await callback.message.answer(f"⚠️ Не удалось создать: {exc}")
         return
     except Exception as exc:
-        await callback.answer("Ошибка создания", show_alert=True)
         if callback.message:
             await callback.message.answer(f"⚠️ Не удалось создать: {exc}")
         return
 
     await state.clear()
-    await callback.answer("Создано")
     if callback.message:
-        try:
-            await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
         ticket = get_ticket_by_id(session, ticket.id) or ticket
-        from bot.services.notify import (
-            format_new_ticket_duty_notification,
-            recipients_for_new_ticket_duty,
-            send_telegram_messages,
-        )
+        from bot.services.notify import notify_new_ticket
 
-        duty_recipients = recipients_for_new_ticket_duty(
-            session, ticket=ticket, creator=db_user
+        notify_status = await notify_new_ticket(
+            callback.bot, session, ticket=ticket, creator=db_user
         )
-        if duty_recipients:
-            await send_telegram_messages(
-                callback.bot,
-                duty_recipients,
-                format_new_ticket_duty_notification(ticket, creator=db_user),
-            )
         await callback.message.answer(
-            "✅ Массовая заявка создана.\n\n"
+            "✅ Массовая заявка создана.\n"
+            f"{notify_status}\n\n"
             + format_mass_ticket_card(ticket, with_history=False),
             parse_mode="HTML",
             reply_markup=mass_ticket_card_keyboard(ticket),

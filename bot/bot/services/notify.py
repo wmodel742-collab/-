@@ -47,13 +47,43 @@ def format_new_ticket_duty_notification(ticket: Ticket, *, creator: User) -> str
 def recipients_for_new_ticket_duty(
     session: Session, *, ticket: Ticket, creator: User
 ) -> list[User]:
-    """Дежурный куратор (менеджер), кроме автора заявки."""
+    """Кому слать о новой заявке: дежурный, иначе другие кураторы; + ответственный.
+
+    Автора заявки не дублируем.
+    """
+    seen: set[int] = set()
+    result: list[User] = []
+
+    def add(user: User | None) -> None:
+        if user is None or not user.active:
+            return
+        if user.id == creator.id:
+            return
+        if user.id in seen:
+            return
+        seen.add(user.id)
+        result.append(user)
+
     duty = get_duty_curator(session)
-    if duty is None or not duty.active:
-        return []
-    if duty.id == creator.id:
-        return []
-    return [duty]
+    add(duty)
+
+    # Если дежурный = автор или не найден — остальные активные кураторы
+    if not result:
+        others = (
+            session.query(User)
+            .filter(
+                User.role == UserRole.CURATOR,
+                User.active.is_(True),
+                User.id != creator.id,
+            )
+            .order_by(User.id.asc())
+            .all()
+        )
+        for user in others:
+            add(user)
+
+    add(ticket.assignee)
+    return result
 
 
 def recipients_for_staff_comment(
@@ -62,10 +92,7 @@ def recipients_for_staff_comment(
     ticket: Ticket,
     actor: User,
 ) -> list[User]:
-    """Кому слать комментарий старшего/админа: ответственный + дежурный + админы/старшие.
-
-    Куратор должен увидеть заметку о выбранной замене.
-    """
+    """Кому слать комментарий старшего/админа: ответственный + дежурный + админы/старшие."""
     from bot.services.tickets import list_comment_notify_recipients
 
     seen: set[int] = set()
@@ -98,6 +125,43 @@ async def send_telegram_messages(bot, recipients: list[User], text: str) -> int:
         except Exception:
             logger.exception("notify failed tg=%s", user.telegram_id)
     return notified
+
+
+async def notify_new_ticket(
+    bot,
+    session: Session,
+    *,
+    ticket: Ticket,
+    creator: User,
+) -> str:
+    """Уведомить дежурного (+ fallback / рабочий чат). Вернуть строку статуса для создателя."""
+    text = format_new_ticket_duty_notification(ticket, creator=creator)
+    recipients = recipients_for_new_ticket_duty(
+        session, ticket=ticket, creator=creator
+    )
+    notified = await send_telegram_messages(bot, recipients, text)
+
+    chat_ok = False
+    try:
+        from bot.services.automation_settings import get_automation_config
+
+        cfg = get_automation_config(session)
+        if cfg.work_chat_id:
+            await bot.send_message(cfg.work_chat_id, text, parse_mode="HTML")
+            chat_ok = True
+    except Exception:
+        logger.exception("work chat notify failed ticket=%s", ticket.number)
+
+    if notified:
+        names = ", ".join(u.name for u in recipients[:3])
+        extra = " + рабочий чат" if chat_ok else ""
+        return f"🔔 Дежурный уведомлён: {names}{extra}"
+    if chat_ok:
+        return "🔔 Уведомление отправлено в рабочий чат"
+    return (
+        "⚠️ Дежурный не уведомлён — проверьте график кураторов "
+        "и Telegram ID сотрудников"
+    )
 
 
 def can_comment_ticket(user: User, ticket: Ticket) -> bool:
