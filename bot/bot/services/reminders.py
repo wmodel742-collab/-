@@ -124,7 +124,21 @@ def schedule_subtask_reminder(
 
 
 def sync_ticket_reminders(session: Session, ticket: Ticket) -> None:
-    """Вызывать после создания / смены статуса заявки."""
+    """Вызывать после создания / смены статуса заявки.
+
+    Ошибки jobstore (sqlite locked и т.п.) логируем — заявка уже создана
+    и не должна откатываться из‑за напоминания.
+    """
+    try:
+        _sync_ticket_reminders_inner(session, ticket)
+    except Exception:
+        logger.exception(
+            "sync_ticket_reminders failed ticket=%s — create/status kept",
+            getattr(ticket, "id", "?"),
+        )
+
+
+def _sync_ticket_reminders_inner(session: Session, ticket: Ticket) -> None:
     cfg = load_automation_config(session)
 
     if ticket.status in (TicketStatus.DONE, TicketStatus.REJECTED):
@@ -154,6 +168,18 @@ def sync_ticket_reminders(session: Session, ticket: Ticket) -> None:
 
 
 def sync_subtask_reminders(
+    session: Session, subtask: TicketSubtask, *, force: bool = False
+) -> None:
+    try:
+        _sync_subtask_reminders_inner(session, subtask, force=force)
+    except Exception:
+        logger.exception(
+            "sync_subtask_reminders failed subtask=%s — status kept",
+            getattr(subtask, "id", "?"),
+        )
+
+
+def _sync_subtask_reminders_inner(
     session: Session, subtask: TicketSubtask, *, force: bool = False
 ) -> None:
     cfg = load_automation_config(session)

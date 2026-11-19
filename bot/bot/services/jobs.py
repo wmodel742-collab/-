@@ -1,18 +1,44 @@
 """Устойчивый реестр заданий: APScheduler + in-memory для тестов.
 
 Стабильные job_id + replace_existing исключают дубли при рестарте и повторном
-планировании. Jobstore — SQLAlchemy (таблицы APScheduler в той же SQLite).
+планировании. Jobstore — отдельный SQLite-файл (см. jobstore_url_from_database_url).
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("avoperenos.jobs")
+
+
+def _with_jobstore_retry(action: str, fn: Callable[[], Any], *, attempts: int = 5) -> Any:
+    """Повтор при sqlite locked / временных сбоях jobstore."""
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 — jobstore не должен ронять заявки
+            last = exc
+            msg = str(exc).lower()
+            if "locked" not in msg and "database is locked" not in msg:
+                raise
+            delay = 0.05 * (2**i)
+            logger.warning(
+                "jobstore %s locked (try %s/%s), sleep %.2fs: %s",
+                action,
+                i + 1,
+                attempts,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+    assert last is not None
+    raise last
 
 # Префиксы стабильных id
 JOB_TICKET_REMINDER = "reminder:ticket:"
@@ -69,15 +95,19 @@ class JobGateway:
         self._memory[job_id] = record
         if self._scheduler is not None:
             fn = self._resolve(callback_name)
-            self._scheduler.add_job(
-                fn,
-                trigger="date",
-                run_date=run_at,
-                id=job_id,
-                replace_existing=True,
-                kwargs=kwargs,
-                misfire_grace_time=3600,
-            )
+
+            def _add() -> None:
+                self._scheduler.add_job(
+                    fn,
+                    trigger="date",
+                    run_date=run_at,
+                    id=job_id,
+                    replace_existing=True,
+                    kwargs=kwargs,
+                    misfire_grace_time=3600,
+                )
+
+            _with_jobstore_retry(f"add:{job_id}", _add)
 
     def schedule_cron(
         self,
@@ -110,14 +140,18 @@ class JobGateway:
             }
             if day_of_week is not None:
                 trigger_kwargs["day_of_week"] = day_of_week
-            self._scheduler.add_job(
-                fn,
-                trigger=CronTrigger(**trigger_kwargs),
-                id=job_id,
-                replace_existing=True,
-                kwargs=kwargs,
-                misfire_grace_time=3600,
-            )
+
+            def _add() -> None:
+                self._scheduler.add_job(
+                    fn,
+                    trigger=CronTrigger(**trigger_kwargs),
+                    id=job_id,
+                    replace_existing=True,
+                    kwargs=kwargs,
+                    misfire_grace_time=3600,
+                )
+
+            _with_jobstore_retry(f"cron:{job_id}", _add)
 
     def schedule_interval(
         self,
@@ -137,15 +171,19 @@ class JobGateway:
         self._memory[job_id] = record
         if self._scheduler is not None:
             fn = self._resolve(callback_name)
-            self._scheduler.add_job(
-                fn,
-                trigger="interval",
-                minutes=minutes,
-                id=job_id,
-                replace_existing=True,
-                kwargs=kwargs,
-                misfire_grace_time=600,
-            )
+
+            def _add() -> None:
+                self._scheduler.add_job(
+                    fn,
+                    trigger="interval",
+                    minutes=minutes,
+                    id=job_id,
+                    replace_existing=True,
+                    kwargs=kwargs,
+                    misfire_grace_time=600,
+                )
+
+            _with_jobstore_retry(f"interval:{job_id}", _add)
 
     def remove_job(self, job_id: str) -> bool:
         existed = job_id in self._memory

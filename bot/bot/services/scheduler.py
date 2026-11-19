@@ -247,8 +247,19 @@ def setup_scheduler(
     _session_factory = session_factory
     _bot = bot
 
-    # APScheduler SQLAlchemy jobstore — отдельные таблицы apscheduler_*
-    jobstores = {"default": SQLAlchemyJobStore(url=database_url)}
+    # Отдельный файл SQLite для jobstore — не делить lock с заявками
+    from bot.db.session import jobstore_url_from_database_url
+
+    jobstore_url = jobstore_url_from_database_url(database_url)
+    logger.info("APScheduler jobstore: %s", jobstore_url)
+    jobstores = {
+        "default": SQLAlchemyJobStore(
+            url=jobstore_url,
+            engine_options={
+                "connect_args": {"check_same_thread": False, "timeout": 30},
+            },
+        )
+    }
     scheduler = AsyncIOScheduler(
         jobstores=jobstores,
         timezone=timezone,
