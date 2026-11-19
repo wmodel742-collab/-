@@ -283,11 +283,14 @@ def test_comment_history(session: Session, curator_user: User):
     assert all(r.id != curator_user.id for r in recipients)
 
 
-def test_admin_assigns_to_self(session: Session, admin_user: User, curator_user: User):
-    _ = curator_user
+def test_admin_assigns_to_duty_curator(
+    session: Session, admin_user: User, curator_user: User
+):
     ticket = create_ticket(session, creator=admin_user, **_one_time_kwargs())
     session.commit()
-    assert ticket.assignee_id == admin_user.id
+    # Админ больше не назначает заявку себе — ответственный = дежурный куратор
+    assert ticket.assignee_id == curator_user.id
+    assert ticket.assignee_id != admin_user.id
 
 
 def test_get_duty_curator_fallback_without_cycle(

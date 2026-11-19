@@ -33,9 +33,9 @@ def resolve_assignee_for_new_ticket(session: Session, creator: User) -> User | N
     """Назначить ответственного при создании заявки.
 
     - создатель-куратор → себе;
-    - администратор → себе;
-    - иначе → дежурный куратор на «сегодня» школы.
+    - администратор / старший / прочие → дежурный куратор на «сегодня» школы
+      (чтобы заявка сразу была у дежурного, а не «висела» на админе).
     """
-    if creator.role in (UserRole.CURATOR, UserRole.ADMIN):
+    if creator.role == UserRole.CURATOR:
         return creator
     return get_duty_curator(session, None)

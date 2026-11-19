@@ -66,15 +66,38 @@ def test_senior_created_ticket_notifies_duty(
     recipients = recipients_for_new_ticket_duty(
         session, ticket=ticket, creator=senior_user
     )
-    assert len(recipients) == 1
-    assert recipients[0].role == UserRole.CURATOR
-    assert recipients[0].id == get_duty_curator(session).id
-    assert recipients[0].id != senior_user.id
-    _ = ksenia
+    # Все активные кураторы (дежурный + остальные)
+    assert {r.role for r in recipients} == {UserRole.CURATOR}
+    assert get_duty_curator(session).id in {r.id for r in recipients}
+    assert ksenia.id in {r.id for r in recipients}
+    assert all(r.id != senior_user.id for r in recipients)
     text = format_new_ticket_duty_notification(ticket, creator=senior_user)
     assert "Новая заявка" in text
     assert "Сидоров" in text
     assert "Заметка о замене" in text
+
+
+def test_admin_created_ticket_notifies_all_curators(
+    session: Session, admin_user, curator_user
+):
+    ticket = create_ticket(
+        session,
+        creator=admin_user,
+        ticket_type=TicketType.ONE_TIME,
+        teacher_name="Иванова",
+        student_name="Петров",
+        initiator=TicketInitiator.TEACHER,
+        original_datetime="20.11.2026 14:00",
+        new_datetime="21.11.2026 16:00",
+        initial_state="not_written",
+    )
+    session.commit()
+    assert ticket.assignee_id == curator_user.id
+    recipients = recipients_for_new_ticket_duty(
+        session, ticket=ticket, creator=admin_user
+    )
+    assert curator_user.id in {r.id for r in recipients}
+    assert admin_user.id not in {r.id for r in recipients}
 
 
 def test_curator_creator_who_is_duty_notifies_other_curator(
